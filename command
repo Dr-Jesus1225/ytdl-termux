@@ -1,0 +1,1 @@
+pkg install git -y && git clone https://github.com/Dr-Jesus1225/ytdl-termux.git && cd ytdl-termux && chmod +x install.sh && ./install.sh
