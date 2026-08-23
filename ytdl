@@ -1,0 +1,30 @@
+#!/bin/sh
+
+echo "================================="
+echo "   YT-DLP Termux Downloader"
+echo "================================="
+echo "Select download type:"
+echo "1) Single Song (MP3)"
+echo "2) Playlist (MP3)"
+echo "---------------------------------"
+read -p "Enter choice [1 or 2]: " choice
+
+read -p "Paste URL: " url
+
+# Destination directory
+DEST_DIR="$HOME/storage/downloads/Music"
+
+case $choice in
+    1)
+        echo "Processing single track download..."
+        yt-dlp -P "$DEST_DIR" --no-playlist -x --audio-format mp3 --audio-quality 0 --embed-thumbnail --embed-metadata "$url"
+        ;;
+    2)
+        echo "Processing full playlist download..."
+        yt-dlp -P "$DEST_DIR" --yes-playlist -o "%(playlist_index)s - %(title)s.%(ext)s" -x --audio-format mp3 --audio-quality 0 --embed-thumbnail --embed-metadata "$url"
+        ;;
+    *)
+        echo "Invalid selection. Exiting."
+        exit 1
+        ;;
+esac
