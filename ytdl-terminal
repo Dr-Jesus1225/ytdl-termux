@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+import sys
+import subprocess
+import json
+import os
+
+# Updated to standard Linux user directory
+MUSIC_DIR = os.path.expanduser("~/Music")
+os.makedirs(MUSIC_DIR, exist_ok=True)
+
+def print_header():
+    print("=================================")
+    print("      YT-DLP Downloader")
+    print("=================================")
+    print("Select download type:")
+    print("1) Single Song (MP3)")
+    print("2) Playlist (MP3)")
+    print("---------------------------------")
+
+def main():
+    print_header()
+    choice = input("Enter choice [1 or 2]: ").strip()
+    if choice not in ("1", "2"):
+        sys.exit(1)
+
+    url = input("Paste URL: ").strip()
+    if not url:
+        sys.exit(1)
+
+    print("\nFetching metadata...")
+    
+    cmd = ["yt-dlp", "-J", "--flat-playlist", "--no-warnings", url]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        sys.exit(1)
+
+    data = json.loads(res.stdout)
+    
+    if "entries" in data:
+        items = list(data["entries"])
+        playlist_name = data.get("title", "Playlist")
+    else:
+        items = [data]
+        playlist_name = data.get("title", "Song")
+
+    if choice == "1":
+        items = [items[0]]
+        
+    print(f"\ndownloading {playlist_name}...\n")
+
+    total = len(items)
+    for idx, item in enumerate(items, 1):
+        title = item.get("title", f"Track_{idx}")
+        item_url = item.get("url") or item.get("webpage_url") or f"https://www.youtube.com/watch?v={item.get('id')}"
+
+        if total > 1:
+            print(f"#{idx}/{total}")
+        
+        print(f"song name: {title}")
+        print("thumbnail downloaded")
+
+        output_template = f"{MUSIC_DIR}/%(title)s.%(ext)s"
+        
+        dl_cmd = [
+            "yt-dlp",
+            "-q", "--progress",
+            "--progress-template", "%(progress._percent_str)s | %(progress._speed_str)s | ETA: %(progress._eta_str)s",
+            "--embed-thumbnail",
+            "--add-metadata",
+            "-x", "--audio-format", "mp3",
+            "-o", output_template,
+            item_url
+        ]
+
+        subprocess.run(dl_cmd)
+        
+        print(f"\nsaving {title} to {MUSIC_DIR}\n")
+
+if __name__ == "__main__":
+    main()
