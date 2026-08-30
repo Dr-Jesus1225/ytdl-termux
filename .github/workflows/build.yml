@@ -3,18 +3,14 @@ name: Build Android APK
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
 
     - name: Set up JDK 21
       uses: actions/setup-java@v4
@@ -25,13 +21,14 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+        sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libffi-dev libssl-dev
         pip install --upgrade pip buildozer cython virtualenv
 
     - name: Build APK with Buildozer
       run: |
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-        buildozer -v android debug
+        mkdir -p ~/.buildozer/android/platform/android-sdk/licenses
+        printf "24333f8a637bba39ea846d9a857c19299ed3f31e\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a637bba39ea846d9a857c19299ed3f31e" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
+        yes | buildozer -v android debug
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
