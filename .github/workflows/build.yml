@@ -16,14 +16,24 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install dependencies
+    - name: Install system dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
         pip install --upgrade pip buildozer cython virtualenv
 
-    - name: Build APK
-      run: buildozer -v android debug
+    - name: Pre-accept Android SDK Licenses
+      run: |
+        mkdir -p ~/.buildozer/android/platform/android-sdk/licenses
+        echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
+        echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
+        echo "84831b9409646a5780e44272007e14045a12d519" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-preview-license
+        echo "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" > ~/.buildozer/android/platform/android-sdk/licenses/google-gdk-license
+
+    - name: Build APK with Buildozer
+      run: |
+        export BUILDOZER_ACCEPT_INDIVIDUAL_LICENSES=1
+        buildozer -v android debug
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
