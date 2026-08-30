@@ -11,11 +11,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Build APK with Buildozer Action
-      uses: ArtemSydoryk/buildozer-action@v1.2.0
+    - name: Build APK with Official Kivy Buildozer Action
+      uses: kivy/buildozer-action@v1
       with:
-        workdir: .
-        buildozer_version: master
+        command: buildozer -v android debug
+        buildozer_version: stable
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
