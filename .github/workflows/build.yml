@@ -24,8 +24,8 @@ jobs:
 
     - name: Build APK with Buildozer
       run: |
-        export BUILDOZER_ACCEPT_INDIVIDUAL_LICENSES=1
-        yes | buildozer -v android debug
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+        buildozer -v android debug
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
