@@ -1,150 +1,200 @@
 import sys
-import os
 import re
+import yt_dlp
 
-try:
-    import yt_dlp
-except ImportError:
-    print("yt-dlp is required. Please install it using: pip install yt-dlp")
-    sys.exit(1)
+# ANSI Color Escape Sequences
+GREEN = '\033[92m'
+CYAN = '\033[96m'
+YELLOW = '\033[93m'
+RESET = '\033[0m'
 
-def print_banner():
-    print(r"""
-  ____    _  _____ __        _____ _____ 
- / ___|  / \|_   _|\ \      / /_ _|__  / 
-| |     / _ \ | |   \ \ /\ / / | |  / /  
-| |___ / ___ \| |    \ V  V /  | | / /_  
- \____/_/   \_\_|     \_/\_/  |___/____| 
-                                         
-          CATWIZ-ytdl Media Downloader
-""")
+# ASCII Header Banner
+BANNER = f"""{CYAN}
+  /\\_/\\  
+ ( o.o ) 
+  > ^ <  
+   ___   _  _____ __      _____ _____ 
+  / __| /_\\|_   _\\ \\    / /_ _|__  / 
+ | (__ / _ \\ | |   \\ \\/\\/ / | |  / /  
+  \\___/_/ \\_\\|_|    \\_/\\_/ |___|/___| 
+{RESET}"""
 
-def progress_hook(d):
-    if d['status'] == 'downloading':
-        p = d.get('_percent_str', '0%').strip()
-        s = d.get('_speed_str', 'N/A').strip()
-        e = d.get('_eta_str', 'N/A').strip()
-        sys.stdout.write(f"\r[CATWIZ] Downloading... {p} at {s} ETA {e}   ")
-        sys.stdout.flush()
-    elif d['status'] == 'finished':
-        filepath = d.get('filename', '')
-        info = d.get('info_dict', {})
-        
-        # Determine index tracking for playlist
-        idx_str = ""
-        p_index = info.get('playlist_index')
-        p_count = info.get('playlist_count') or info.get('n_entries')
-        
-        if p_index and p_count:
-            idx_str = f" #{p_index}/{p_count}"
-        elif p_index:
-            idx_str = f" #{p_index}"
+class QuietLogger:
+    def debug(self, msg): pass
+    def info(self, msg): pass
+    def warning(self, msg): pass
+    def error(self, msg): pass
 
-        print(f"\nSaving to {filepath}")
-        print(f"File{idx_str} saved")
+def print_green(message):
+    print(f"{GREEN}{message}{RESET}")
 
-def main():
-    print_banner()
-    
-    if len(sys.argv) > 1:
-        url = sys.argv[1]
-    else:
-        print("Enter YouTube URL:")
-        url = input().strip()
-        
-    if not url:
-        print("No URL provided. Exiting, sir.")
-        return
+def is_valid_yt_url(url):
+    pattern = r'^(https?://)?(www\.|m\.)?(youtube\.com/(watch\?|playlist\?|shorts/)|youtu\.be/)[^\s]+$'
+    return re.match(pattern, url) is not None
 
-    print("\nSelect Download Mode:")
-    print("1) Video (MP4)")
-    print("2) Audio (MP3)")
-    print("3) Playlist - Video")
-    print("4) Playlist - Audio (MP3)")
-    
-    choice = input("\nChoice [1-4] (Default: 1): ").strip() or "1"
-
-    is_audio = choice in ['2', '4']
-    is_playlist = choice in ['3', '4']
-
-    # Custom logger to print exact verbose messages during processing steps
-    class CustomLogger:
-        def debug(self, msg):
-            if '[info] Downloading video thumbnail' in msg:
-                print("Fetching Thumbnail")
-            elif '[ThumbnailsConvertor] Converting thumbnail' in msg or 'Writing thumbnail' in msg:
-                print("Thumbnail downloaded")
-            elif '[download] Destination:' in msg and not hasattr(self, '_started'):
-                print("Starting download")
-                self._started = True
-
-        def info(self, msg):
-            pass
-
-        def warning(self, msg):
-            pass
-
-        def error(self, msg):
-            print(msg)
-
-    # Media identification step
-    media_label = "Song" if is_audio else "Video"
-    print(f"\n{media_label} found")
-
+def check_video_availability(url):
     ydl_opts = {
-        'writethumbnail': True,
-        'logger': CustomLogger(),
-        'progress_hooks': [progress_hook],
-        'quiet': False,
-        'nocheckcertificate': True,
+        'quiet': True,
+        'no_warnings': True,
+        'logger': QuietLogger(),
+        'extract_flat': 'in_playlist',
     }
-
-    if choice == '1':
-        ydl_opts.update({
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': '%(title)s.%(ext)s',
-            'noplaylist': True,
-            'postprocessors': [
-                {'key': 'FFmpegMetadata'},
-                {'key': 'EmbedThumbnail'},
-            ],
-        })
-    elif choice == '2':
-        ydl_opts.update({
-            'format': 'bestaudio/best',
-            'outtmpl': '%(title)s.%(ext)s',
-            'noplaylist': True,
-            'postprocessors': [
-                {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'},
-                {'key': 'FFmpegMetadata'},
-                {'key': 'EmbedThumbnail'},
-            ],
-        })
-    elif choice == '3':
-        ydl_opts.update({
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': '%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s',
-            'postprocessors': [
-                {'key': 'FFmpegMetadata'},
-                {'key': 'EmbedThumbnail'},
-            ],
-        })
-    elif choice == '4':
-        ydl_opts.update({
-            'format': 'bestaudio/best',
-            'outtmpl': '%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s',
-            'postprocessors': [
-                {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'},
-                {'key': 'FFmpegMetadata'},
-                {'key': 'EmbedThumbnail'},
-            ],
-        })
-
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            ydl.download([url])
-        except Exception as e:
-            print(f"Error: {e}")
+            info = ydl.extract_info(url, download=False)
+            return info is not None
+        except Exception:
+            return False
 
-if __name__ == "__main__":
-    main()
+def fetch_single_video_qualities(url):
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'logger': QuietLogger(),
+        'noplaylist': True
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+            formats = info.get('formats', [])
+            heights = sorted(list(set(
+                f.get('height') for f in formats
+                if f.get('height') is not None and f.get('vcodec') != 'none'
+            )))
+            return heights
+        except Exception:
+            return None
+
+def get_validated_url():
+    while True:
+        url = input(f"\n{YELLOW}Enter YouTube URL:{RESET} ").strip()
+        if is_valid_yt_url(url):
+            return url
+        print_green("please provide a yt link")
+
+def main():
+    print(BANNER)
+    print(f"{CYAN}======================================{RESET}")
+    print("  1. Audio (.mp3)")
+    print("  2. Video (.mp4)")
+    print(f"{CYAN}--------------------------------------{RESET}")
+    mode = input(f"{YELLOW}Select format [1/2]:{RESET} ").strip()
+
+    if mode not in ('1', '2'):
+        print_green("Invalid format selected.")
+        sys.exit(1)
+
+    print(f"\n{CYAN}--------------------------------------{RESET}")
+    print("  1. Single Item")
+    print("  2. Full Playlist")
+    print(f"{CYAN}--------------------------------------{RESET}")
+    type_choice = input(f"{YELLOW}Select type [1/2]:{RESET} ").strip()
+    if type_choice not in ('1', '2'):
+        print_green("Invalid option selected.")
+        sys.exit(1)
+        
+    is_playlist = (type_choice == '2')
+
+    url = get_validated_url()
+
+    if not check_video_availability(url):
+        print_green("video doesnt exist, probably private or smth")
+        sys.exit(1)
+
+    save_path = "/sdcard/Download/Music" if mode == '1' else "/sdcard/Download"
+    media_type = "Song" if mode == '1' else "Video"
+
+    print(f"\n{media_type} found")
+    print("Fetching Thumbnail")
+    print("Thumbnail downloaded")
+
+    if mode == '1':
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': f'{save_path}/%(title)s.%(ext)s',
+            'writethumbnails': True,
+            'postprocessors': [
+                {
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                },
+                {'key': 'FFmpegMetadata'},
+                {'key': 'EmbedThumbnail'},
+            ],
+            'noplaylist': not is_playlist,
+            'quiet': True,
+            'no_warnings': True,
+            'logger': QuietLogger(),
+        }
+    else:
+        target_height = None
+        if is_playlist:
+            standards = [144, 240, 360, 480, 720, 1080]
+            print(f"\n{CYAN}--- Standard Playlist Resolutions ---{RESET}")
+            for i, q in enumerate(standards):
+                print(f"  {i + 1}. {q}p")
+            try:
+                choice = int(input(f"\n{YELLOW}Choice:{RESET} ").strip())
+                target_height = standards[choice - 1]
+            except (ValueError, IndexError):
+                target_height = 720
+        else:
+            print("\nFetching resolutions...")
+            qualities = fetch_single_video_qualities(url)
+            if not qualities:
+                print_green("video doesnt exist, probably private or smth")
+                sys.exit(1)
+            else:
+                print(f"\n{CYAN}--- Available Resolutions ---{RESET}")
+                for i, q in enumerate(qualities):
+                    print(f"  {i + 1}. {q}p")
+                try:
+                    choice = int(input(f"\n{YELLOW}Choice:{RESET} ").strip())
+                    target_height = qualities[choice - 1]
+                except (ValueError, IndexError):
+                    target_height = qualities[-1]
+
+        if target_height:
+            fmt = f"bestvideo[height<={target_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={target_height}]+bestaudio/best"
+        else:
+            fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+
+        ydl_opts = {
+            'format': fmt,
+            'merge_output_format': 'mp4',
+            'outtmpl': f'{save_path}/%(title)s.%(ext)s',
+            'writethumbnails': True,
+            'postprocessors': [
+                {'key': 'FFmpegMetadata'},
+                {'key': 'EmbedThumbnail'},
+            ],
+            'noplaylist': not is_playlist,
+            'quiet': True,
+            'no_warnings': True,
+            'logger': QuietLogger(),
+        }
+
+    def custom_hook(d):
+        if d['status'] == 'finished':
+            idx = d.get('playlist_index', 1)
+            total = d.get('playlist_autonumber', 1) if is_playlist else 1
+            if is_playlist and 'info_dict' in d:
+                total = d['info_dict'].get('playlist_count', total)
+            print(f"File #{idx}/{total} saved")
+
+    ydl_opts['progress_hooks'] = [custom_hook]
+
+    try:
+        print_green("Starting download")
+        print_green(f"Saving to {save_path}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+    except Exception:
+        print_green("video doesnt exist, probably private or smth")
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)
