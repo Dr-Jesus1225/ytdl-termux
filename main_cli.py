@@ -92,7 +92,7 @@ def main():
     if type_choice not in ('1', '2'):
         print_green("Invalid option selected.")
         sys.exit(1)
-
+        
     is_playlist = (type_choice == '2')
 
     url = get_validated_url()
@@ -101,15 +101,27 @@ def main():
         print_green("video doesnt exist, probably private or smth")
         sys.exit(1)
 
+    save_path = "/sdcard/Download/Music" if mode == '1' else "/sdcard/Download"
+    media_type = "Song" if mode == '1' else "Video"
+
+    print(f"\n{media_type} found")
+    print("Fetching Thumbnail")
+    print("Thumbnail downloaded")
+
     if mode == '1':
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': '/sdcard/Download/Music/%(title)s.%(ext)s',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
+            'outtmpl': f'{save_path}/%(title)s.%(ext)s',
+            'writethumbnails': True,
+            'postprocessors': [
+                {
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                },
+                {'key': 'FFmpegMetadata'},
+                {'key': 'EmbedThumbnail'},
+            ],
             'noplaylist': not is_playlist,
             'quiet': True,
             'no_warnings': True,
@@ -151,18 +163,33 @@ def main():
         ydl_opts = {
             'format': fmt,
             'merge_output_format': 'mp4',
-            'outtmpl': '/sdcard/Download/%(title)s.%(ext)s',
+            'outtmpl': f'{save_path}/%(title)s.%(ext)s',
+            'writethumbnails': True,
+            'postprocessors': [
+                {'key': 'FFmpegMetadata'},
+                {'key': 'EmbedThumbnail'},
+            ],
             'noplaylist': not is_playlist,
             'quiet': True,
             'no_warnings': True,
             'logger': QuietLogger(),
         }
 
+    def custom_hook(d):
+        if d['status'] == 'finished':
+            idx = d.get('playlist_index', 1)
+            total = d.get('playlist_autonumber', 1) if is_playlist else 1
+            if is_playlist and 'info_dict' in d:
+                total = d['info_dict'].get('playlist_count', total)
+            print(f"File #{idx}/{total} saved")
+
+    ydl_opts['progress_hooks'] = [custom_hook]
+
     try:
-        print_green("\nStarting download...")
+        print_green("Starting download")
+        print_green(f"Saving to {save_path}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-        print_green("Download complete!")
     except Exception:
         print_green("video doesnt exist, probably private or smth")
 
