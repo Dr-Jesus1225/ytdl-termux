@@ -21,11 +21,5 @@ command -v brew &>/dev/null||/bin/bash -c "$(curl -fsSL https://raw.githubuserco
 ### Windows PowerShell
 
 ```powershell
-if(-not(Test-Path "$HIME\CATWIZ-ytdl")){git clone https://github.com/Dr-Jesus1225/ytdl-termux.git "$HOME\CATWIZ-ytdl"};cd "$HOME\CATWIZ-ytdl";python -m pip install yt-dlp;python main_cli.py
-```
-
-### Windows CMD
-
-```cmd
-if not exist "%USERPROFILE%\CATWIZ-ytdl" git clone https://github.com/Dr-Jesus1225/ytdl-termux.git "%USERPROFILE%\CATWIZ-ytdl"&&cd /d "%USERPROFILEI\CMTWIZ-ytdl"&&python -m pip install yt-dlp&&python main_cli.py
+$need=@{git='Git.Git';py='Python.Python.3.12';ffmpeg='Gyan.FFmpeg'};foreach($k in $need.Keys){if(-not(Get-Command $k -ErrorAction SilentlyContinue)){winget install -e --id $need[$k] --accept-package-agreements --accept-source-agreements}};$env:Path=[Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User');if(-not(Test-Path "$HOME\CATWIZ-ytdl")){git clone https://github.com/Dr-Jesus1225/ytdl-termux.git "$HOME\CATWIZ-ytdl"}else{git -C "$HOME\CATWIZ-ytdl" pull};cd "$HOME\CATWIZ-ytdl";py -m pip install -U yt-dlp;py main_cli.py
 ```
