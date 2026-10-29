@@ -6,6 +6,13 @@ import subprocess
 import shutil
 import yt_dlp
 
+if os.name == 'nt':
+    os.system('')  # enables ANSI colors in Windows terminals
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 # Suppress SyntaxWarning for escape sequences
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
@@ -33,6 +40,25 @@ class QuietLogger:
 
 def print_green(message):
     print(f"{GREEN}{message}{RESET}")
+
+def get_download_dir():
+    if os.path.isdir('/sdcard/Download'):
+        return '/sdcard/Download'
+    return os.path.join(os.path.expanduser('~'), 'Downloads')
+
+def check_ffmpeg():
+    if shutil.which('ffmpeg') is None:
+        print(f"{RED}ffmpeg was not found.{RESET}")
+        print("Install it, then reopen this terminal:")
+        print("  Windows: winget install Gyan.FFmpeg")
+        print("  Termux:  pkg install ffmpeg")
+        print("  Debian:  sudo apt install ffmpeg")
+        print("  macOS:   brew install ffmpeg")
+        sys.exit(1)
+
+def clean_filename(title):
+    name = re.sub(r'[\\/*?:"<>|]', "", title).strip(' .')[:150].strip(' .')
+    return name or 'media'
 
 def progress_hook(d):
     if d['status'] == 'downloading':
@@ -304,8 +330,7 @@ def process_thumbnail_only(item_url, is_playlist, index, total, save_path, photo
     
     title = info.get('title', 'thumbnail')
     channel = info.get('uploader') or info.get('channel') or "Unknown Channel"
-    safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
-    
+    safe_title = clean_filename(title)
     if is_playlist:
         print(f"\n[{index}/{total}] {title}")
     else:
@@ -371,7 +396,7 @@ def process_single_item(item_url, mode, is_playlist, index, total, save_path, se
     title = info.get('title', 'media')
     artist_or_creator = info.get('artist') or info.get('uploader') or info.get('channel') or "Unknown"
     
-    safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
+    safe_title = clean_filename(title)
     png_path = f"{safe_title}.png"
 
 
@@ -484,6 +509,7 @@ def process_single_item(item_url, mode, is_playlist, index, total, save_path, se
     print(f"File #{index}/{total} saved")
 
 def main():
+    check_ffmpeg()
     print(BANNER)
     print(f"{CYAN}======================================{RESET}")
     print(" -1. Settings")
@@ -541,13 +567,13 @@ def main():
 
     if mode == '1':
         selected_quality = select_audio_quality(info, is_playlist)
-        save_path = "/sdcard/Download/Music"
+        save_path = os.path.join(get_download_dir(), 'Music')
     elif mode == '2':
         selected_quality = select_video_quality(info, is_playlist)
-        save_path = "/sdcard/Download"
+        save_path = get_download_dir()
     else:
         selected_quality = select_photo_quality(info, is_playlist)
-        save_path = "/sdcard/Download/Thumbnails"
+        save_path = os.path.join(get_download_dir(), 'Thumbnails')
 
     if is_playlist:
         total = len(playlist_items)
