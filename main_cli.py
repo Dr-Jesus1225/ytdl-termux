@@ -12,6 +12,7 @@ warnings.filterwarnings("ignore", category=SyntaxWarning)
 GREEN = '\033[92m'
 CYAN = '\033[96m'
 YELLOW = '\033[93m'
+RED = '\033[91m'
 RESET = '\033[0m'
 
 BANNER = f"""{CYAN}
@@ -33,26 +34,111 @@ class QuietLogger:
 def print_green(message):
     print(f"{GREEN}{message}{RESET}")
 
+def progress_hook(d):
+    if d['status'] == 'downloading':
+        total = d.get('total_bytes') or d.get('total_bytes_estimate')
+        if not total:
+            return
+        pct = d.get('downloaded_bytes', 0) / total
+        filled = int(pct * 20)
+        bar = '█' * filled + '░' * (20 - filled)
+        speed = d.get('speed')
+        sp = f"{speed / 1048576:.1f} MB/s" if speed else "--"
+        eta = d.get('eta')
+        eta_s = f"{eta}s" if eta is not None else "--"
+        print(f"\r{GREEN}[{bar}] {pct * 100:5.1f}%{RESET} {sp} ETA {eta_s}   ", end='', flush=True)
+    elif d['status'] == 'finished':
+        print(f"\r{GREEN}[{'█' * 20}] 100.0%{RESET}" + " " * 25)
+
 def is_valid_yt_url(url):
-    pattern = r'^(https?://)?(www\.|m\.)?(youtube\.com/(watch\?|playlist\?|shorts/)|youtu\.be/)[^\s]+$'
+    pattern = r'^(https?://)?((www|m|music)\.)?(youtube\.com/(watch\?|playlist\?|shorts/|live/|embed/)|youtu\.be/)[^\s]+$'
     return re.match(pattern, url) is not None
 
-def get_validated_url():
+def format_duration(sec):
+    if not sec:
+        return "Unknown"
+    sec = int(sec)
+    h, rem = divmod(sec, 3600)
+    m, sc = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sc:02d}" if h else f"{m}:{sc:02d}"
+
+def ask_proceed():
+    while True:
+        ans = input(f"\n{YELLOW}Proceed? [y/n]:{RESET} ").strip().lower()
+        if ans in ('y', 'n'):
+            return ans == 'y'
+
+def fetch_playlist_info(url):
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': True,
+        'logger': QuietLogger(),
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+        except Exception:
+            return None
+    if not info:
+        return None
+    name = info.get('title') or 'Unknown'
+    creator = info.get('uploader') or info.get('channel')
+    if 'entries' in info:
+        items = [e['url'] for e in info['entries'] if e and e.get('url')]
+    else:
+        items = [url]
+    return name, creator, items
+
+def get_validated_url(is_playlist, mode):
     attempts = 0
     max_attempts = 3
-    while attempts < max_attempts:
+    while True:
         url = input(f"\n{YELLOW}Enter YouTube URL (or enter 0 to cancel):{RESET} ").strip()
         if url == '0':
             print_green("Operation cancelled.")
             sys.exit(0)
-        if is_valid_yt_url(url):
-            return url
-        attempts += 1
-        if attempts < max_attempts:
-            print_green("please provide a yt link")
+        print("\nChecking link...")
+        result = None
+        if not is_valid_yt_url(url):
+            print(f"{RED}Not a valid YouTube link{RESET}")
+            print("  Expected: youtube.com, music.youtube.com, youtu.be, shorts, or playlist")
         else:
+            if not url.startswith('http'):
+                url = 'https://' + url
+            print_green("Valid YouTube link")
+            if is_playlist:
+                data = fetch_playlist_info(url)
+                if data and data[2]:
+                    name, creator, items = data
+                    print_green("Playlist found")
+                    print(f"  Name:    {name}")
+                    if creator:
+                        print(f"  Creator: {creator}")
+                    print(f"  Items:   {len(items)}")
+                    result = (url, None, items)
+            else:
+                info = fetch_info(url)
+                if info:
+                    print_green("Video found")
+                    print(f"  Title:    {info.get('title', 'Unknown')}")
+                    who = info.get('artist') or info.get('uploader') or info.get('channel') or 'Unknown'
+                    print(f"  {'Artist' if mode == '1' else 'Channel'}:".ljust(11) + f" {who}")
+                    if mode != '3':
+                        print(f"  Duration: {format_duration(info.get('duration'))}")
+                    result = (url, info, None)
+            if result is None:
+                print(f"{RED}Video not available (private, deleted, or region-locked){RESET}")
+        if result:
+            attempts = 0
+            if ask_proceed():
+                return result
+            continue
+        attempts += 1
+        if attempts >= max_attempts:
             print_green("Too many invalid attempts. Exiting.")
             sys.exit(1)
+        print(f"Attempt {attempts}/{max_attempts}")
 
 def fetch_info(url):
     ydl_info_opts = {
@@ -215,15 +301,16 @@ def process_thumbnail_only(item_url, is_playlist, index, total, save_path, photo
         print_green("video doesnt exist, probably private or smth")
         return
 
-    print("\nImage found")
     
     title = info.get('title', 'thumbnail')
     channel = info.get('uploader') or info.get('channel') or "Unknown Channel"
     safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
     
-    print(f"Title: {title}")
-    print(f"Creator: {channel}")
-    print("Fetching Thumbnail")
+    if is_playlist:
+        print(f"\n[{index}/{total}] {title}")
+    else:
+        print()
+    print("Fetching thumbnail...")
 
     downloaded_thumb = None
 
@@ -280,7 +367,6 @@ def process_single_item(item_url, mode, is_playlist, index, total, save_path, se
         print_green("video doesnt exist, probably private or smth")
         return
 
-    print(f"\n{media_label} found")
     
     title = info.get('title', 'media')
     artist_or_creator = info.get('artist') or info.get('uploader') or info.get('channel') or "Unknown"
@@ -288,13 +374,12 @@ def process_single_item(item_url, mode, is_playlist, index, total, save_path, se
     safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
     png_path = f"{safe_title}.png"
 
-    print(f"Title: {title}")
-    if mode == '1':
-        print(f"Artist: {artist_or_creator}")
-    else:
-        print(f"Creator: {artist_or_creator}")
 
-    print("Fetching Thumbnail")
+    if is_playlist:
+        print(f"\n[{index}/{total}] {title}")
+    else:
+        print()
+    print("Fetching thumbnail...")
     thumb_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -341,11 +426,11 @@ def process_single_item(item_url, mode, is_playlist, index, total, save_path, se
         dl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': f'temp_{safe_title}.%(ext)s',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': selected_format,
-            }],
+            'postprocessors': [
+            {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': selected_format},
+            {'key': 'FFmpegMetadata', 'add_metadata': True},
+        ],
+        'progress_hooks': [progress_hook],
             'quiet': True,
             'no_warnings': True,
             'logger': QuietLogger(),
@@ -355,6 +440,8 @@ def process_single_item(item_url, mode, is_playlist, index, total, save_path, se
             'format': selected_format,
             'outtmpl': temp_media,
             'merge_output_format': 'mp4',
+        'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True, 'add_chapters': True}],
+        'progress_hooks': [progress_hook],
             'quiet': True,
             'no_warnings': True,
             'logger': QuietLogger(),
@@ -450,23 +537,7 @@ def main():
         sys.exit(0)
 
     is_playlist = (type_choice == '2')
-    url = get_validated_url()
-
-    info = None
-    playlist_items = None
-
-    if is_playlist:
-        print_green("Checking playlist...")
-        playlist_items = fetch_playlist_entries(url)
-        if not playlist_items:
-            print_green("video doesnt exist, probably private or smth")
-            sys.exit(1)
-    else:
-        print_green("Fetching video info...")
-        info = fetch_info(url)
-        if not info:
-            print_green("video doesnt exist, probably private or smth")
-            sys.exit(1)
+    url, info, playlist_items = get_validated_url(is_playlist, mode)
 
     if mode == '1':
         selected_quality = select_audio_quality(info, is_playlist)
