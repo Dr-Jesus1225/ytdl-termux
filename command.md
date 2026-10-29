@@ -9,13 +9,13 @@ pkg update -y&&command -v git &>/dev/null||pkg install git -y&&[ -d "$HOME/CATWI
 ### Debian/Ubuntu
 
 ```bash
-sudo apt update -y&&command -v git &>/dev/null||sudo apt install git -y&&[ -d "$HOME/CATWIZ-ytdl" ]||git clone https://github.com/Dr-Jesus1225/ytdl-termux.git "$HOME/CATWIZ-ytdl"&&bash "$HOME/CATWIZ-ytdl/preq.sh"&&echo -e "#!/usr/bin/env bash\npython3 \"$HOME/CATWIZ-ytdl/main_cli.py\"" | sudo tee /usr/local/bin/ytdl >/dev/null&&sudo chmod +x /usr/local/bin/ytdl&&ytdl
+sudo apt update -y&&sudo apt install -y git python3 python3-pip python3-venv ffmpeg&&if [ -d "$HOME/CATWIZ-ytdl" ];then git -C "$HOME/CATWIZ-ytdl" pull;else git clone https://github.com/Dr-Jesus1225/ytdl-termux.git "$HOME/CATWIZ-ytdl";fi&&python3 -m venv "$HOME/CATWIZ-ytdl/.venv"&&"$HOME/CATWIZ-ytdl/.venv/bin/pip" install -U yt-dlp&&printf '#!/usr/bin/env bash\nexec "%s/CATWIZ-ytdl/.venv/bin/python" "%s/CATWIZ-ytdl/main_cli.py" "$@"\n' "$HOME" "$HOME"|sudo tee /usr/local/bin/ytdl >/dev/null&&sudo chmod +x /usr/local/bin/ytdl&&ytdl
 ```
 
 ### macOS
 
 ```bash
-command -v brew &>/dev/null||/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"&&command -v git &>/dev/null||brew install git&&[ -d "$HOME/CATWIZ-ytdl" ]||git clone https://github.com/Dr-Jesus1225/ytdl-termux.git "$HOME/CATWIZ-ytdl"&&bash "$HOME/CATWIZ-ytdl/preq.sh"&&echo -e "#!/usr/bin/env bash\npython3 \"$HOME/CATWIZ-ytdl/main_cli.py\"" | sudo tee /usr/local/bin/ytdl >/dev/null&&sudo chod +x /usr/local/bin/ytdl&&ytdl
+command -v brew &>/dev/null||/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)";for b in /opt/homebrew/bin/brew /usr/local/bin/brew;do [ -x "$b" ]&&eval "$("$b" shellenv)";done;brew install git python ffmpeg&&if [ -d "$HOME/CATWIZ-ytdl" ];then git -C "$HOME/CATWIZ-ytdl" pull;else git clone https://github.com/Dr-Jesus1225/ytdl-termux.git "$HOME/CATWIZ-ytdl";fi&&python3 -m venv "$HOME/CATWIZ-ytdl/.venv"&&"$HOME/CATWIZ-ytdl/.venv/bin/pip" install -U yt-dlp&&sudo mkdir -p /usr/local/bin&&printf '#!/usr/bin/env bash\nexec "%s/CATWIZ-ytdl/.venv/bin/python" "%s/CATWIZ-ytdl/main_cli.py" "$@"\n' "$HOME" "$HOME"|sudo tee /usr/local/bin/ytdl >/dev/null&&sudo chmod +x /usr/local/bin/ytdl&&ytdl
 ```
 
 ### Windows PowerShell
