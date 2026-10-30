@@ -1,7 +1,5 @@
 # CATWIZ-ytdl
 
-A terminal menu for downloading YouTube audio, video, and thumbnails, built on [yt-dlp](https://github.com/yt-dlp/yt-dlp). Made for personal use.
-
 ## Features
 
 - Audio (.mp3, 128 to 320 kbps), video (.mp4, pick your resolution), or thumbnail (.png)
