@@ -6,6 +6,8 @@ import subprocess
 import shutil
 import tempfile
 import importlib.util
+import glob
+from datetime import datetime
 import yt_dlp
 
 if os.name == 'nt':
@@ -61,6 +63,86 @@ def check_ffmpeg():
 def clean_filename(title):
     name = re.sub(r'[\\/*?:"<>|]', "", title).strip(' .')[:150].strip(' .')
     return name or 'media'
+
+ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
+ERROR_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'errors.log')
+
+def log_error(context, detail):
+    """Append a line to errors.log so problems can be reported later."""
+    try:
+        with open(ERROR_LOG, 'a', encoding='utf-8') as f:
+            f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {context}: {detail}\n")
+    except OSError:
+        pass
+
+def short_reason(err, limit=140):
+    text = ANSI_RE.sub('', str(err)).strip()
+    text = re.sub(r'^(ERROR:\s*)+', '', text)
+    line = text.splitlines()[0] if text else 'unknown error'
+    return line[:limit]
+
+def run_ffmpeg(cmd):
+    """Run ffmpeg and return (ok, reason). The reason is the last line ffmpeg printed on failure."""
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                           text=True, errors='replace')
+    except FileNotFoundError:
+        return False, 'ffmpeg not found'
+    except OSError as e:
+        return False, short_reason(e)
+    if r.returncode == 0:
+        return True, ''
+    lines = [l.strip() for l in (r.stderr or '').splitlines() if l.strip()]
+    return False, (lines[-1][:140] if lines else f'exit code {r.returncode}')
+
+def ensure_dir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+        return True
+    except OSError as e:
+        print(f"{RED}Can't write to {path} ({short_reason(e)}){RESET}")
+        if os.path.isdir('/data/data/com.termux'):
+            print("On Termux, run termux-setup-storage and allow storage access.")
+        log_error('save folder', f"{path}: {e}")
+        return False
+
+def safe_remove(path):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+def cleanup_partials(safe_title, png_path):
+    for p in glob.glob(glob.escape(f"temp_{safe_title}") + ".*"):
+        safe_remove(p)
+    safe_remove(png_path)
+    for ext in ('.webp', '.jpg', '.png'):
+        safe_remove(f"{safe_title}{ext}")
+
+def item_failed(index, total, why, context):
+    print(f"{RED}File #{index}/{total} failed: {why}{RESET}")
+    log_error(context, why)
+    return False
+
+def download_thumbnail_file(item_url, safe_title):
+    thumb_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'writethumbnail': True,
+        'outtmpl': safe_title.replace('%', '%%'),
+        'logger': QuietLogger(),
+    }
+    with yt_dlp.YoutubeDL(thumb_opts) as ydl:
+        try:
+            ydl.download([item_url])
+        except Exception as e:
+            log_error(item_url, f"thumbnail download failed: {e}")
+    for ext in ['.webp', '.jpg', '.png']:
+        if os.path.exists(f"{safe_title}{ext}"):
+            return f"{safe_title}{ext}"
+    return None
 
 def progress_hook(d):
     if d['status'] == 'downloading':
@@ -326,12 +408,9 @@ def select_photo_quality(info, is_playlist):
 def process_thumbnail_only(item_url, is_playlist, index, total, save_path, photo_quality, pre_info=None):
     info = pre_info or fetch_info(item_url)
     if not info:
-        print_green("video doesnt exist, probably private or smth")
-        return
+        return item_failed(index, total, 'video not available (private, deleted, or region-locked)', item_url)
 
-    
     title = info.get('title', 'thumbnail')
-    channel = info.get('uploader') or info.get('channel') or "Unknown Channel"
     safe_title = clean_filename(title)
     if is_playlist:
         print(f"\n[{index}/{total}] {title}")
@@ -347,117 +426,105 @@ def process_thumbnail_only(item_url, is_playlist, index, total, save_path, photo
         try:
             urllib.request.urlretrieve(photo_quality, temp_img)
             downloaded_thumb = temp_img
-        except Exception:
-            pass
+        except Exception as e:
+            log_error(item_url, f"direct thumbnail download failed: {e}")
 
     if not downloaded_thumb:
-        thumb_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'skip_download': True,
-            'writethumbnail': True,
-            'outtmpl': safe_title,
-            'logger': QuietLogger(),
-        }
-        with yt_dlp.YoutubeDL(thumb_opts) as ydl:
-            try:
-                ydl.download([item_url])
-            except Exception:
-                pass
+        downloaded_thumb = download_thumbnail_file(item_url, safe_title)
 
-        for ext in ['.webp', '.jpg', '.png']:
-            if os.path.exists(f"{safe_title}{ext}"):
-                downloaded_thumb = f"{safe_title}{ext}"
-                break
+    if not downloaded_thumb or not os.path.exists(downloaded_thumb):
+        return item_failed(index, total, 'could not download the thumbnail', item_url)
 
-    png_path = f"{save_path}/{safe_title}.png"
-    os.makedirs(save_path, exist_ok=True)
+    if not ensure_dir(save_path):
+        safe_remove(downloaded_thumb)
+        return item_failed(index, total, 'save folder is not writable', item_url)
 
-    if downloaded_thumb and os.path.exists(downloaded_thumb):
-        subprocess.run(
-            ['ffmpeg', '-y', '-i', downloaded_thumb, png_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        if os.path.exists(downloaded_thumb) and downloaded_thumb != png_path:
-            os.remove(downloaded_thumb)
+    png_path = os.path.join(save_path, f"{safe_title}.png")
+    ok, why = run_ffmpeg(['ffmpeg', '-y', '-i', downloaded_thumb, png_path])
+    if ok:
+        safe_remove(downloaded_thumb)
+        print("Thumbnail downloaded")
+        print_green(f"Saving to {save_path}")
+        print(f"File #{index}/{total} saved")
+        return True
 
-    print("Thumbnail downloaded")
-    print_green(f"Saving to {save_path}")
+    # Conversion failed: keep the original image instead of losing it
+    safe_remove(png_path)
+    log_error(item_url, f"png conversion failed: {why}")
+    ext = os.path.splitext(downloaded_thumb)[1] or '.jpg'
+    kept = os.path.join(save_path, f"{safe_title}{ext}")
+    try:
+        shutil.move(downloaded_thumb, kept)
+    except OSError as e:
+        safe_remove(downloaded_thumb)
+        return item_failed(index, total, f"could not convert or keep the thumbnail ({short_reason(e)})", item_url)
+    print(f"{YELLOW}PNG conversion failed ({why}){RESET}")
+    print_green(f"Saved the original image instead: {kept}")
     print(f"File #{index}/{total} saved")
+    return True
 
 def process_single_item(item_url, mode, is_playlist, index, total, save_path, selected_format, pre_info=None):
-    media_label = "Song" if mode == '1' else "Video"
-    
     info = pre_info or fetch_info(item_url)
     if not info:
-        print_green("video doesnt exist, probably private or smth")
-        return
+        return item_failed(index, total, 'video not available (private, deleted, or region-locked)', item_url)
 
-    
     title = info.get('title', 'media')
-    artist_or_creator = info.get('artist') or info.get('uploader') or info.get('channel') or "Unknown"
-    
     safe_title = clean_filename(title)
     png_path = f"{safe_title}.png"
-
+    ext = 'mp3' if mode == '1' else 'mp4'
+    temp_media = f"temp_{safe_title}.{ext}"
+    final_output = os.path.join(save_path, f"{safe_title}.{ext}")
 
     if is_playlist:
         print(f"\n[{index}/{total}] {title}")
     else:
         print()
+
+    # ---- thumbnail / cover art ----
     print("Fetching thumbnail...")
-    thumb_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-        'writethumbnail': True,
-        'outtmpl': safe_title,
-        'logger': QuietLogger(),
-    }
-    with yt_dlp.YoutubeDL(thumb_opts) as ydl:
-        try:
-            ydl.download([item_url])
-        except Exception:
-            pass
-
-    downloaded_thumb = None
-    for ext in ['.webp', '.jpg', '.png']:
-        if os.path.exists(f"{safe_title}{ext}"):
-            downloaded_thumb = f"{safe_title}{ext}"
-            break
-
+    have_cover = False
+    downloaded_thumb = download_thumbnail_file(item_url, safe_title)
     if downloaded_thumb and os.path.exists(downloaded_thumb):
+        if downloaded_thumb == png_path:
+            # input and output would be the same file, so move the input aside first
+            moved = f"{safe_title}_src.png"
+            try:
+                os.replace(downloaded_thumb, moved)
+                downloaded_thumb = moved
+            except OSError:
+                pass
         if mode == '1':
             ffmpeg_cmd = ['ffmpeg', '-y', '-i', downloaded_thumb, '-vf', 'crop=ih:ih', png_path]
         else:
             ffmpeg_cmd = ['ffmpeg', '-y', '-i', downloaded_thumb, png_path]
-            
-        subprocess.run(
-            ffmpeg_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        if os.path.exists(downloaded_thumb) and downloaded_thumb != png_path:
-            os.remove(downloaded_thumb)
+        ok, why = run_ffmpeg(ffmpeg_cmd)
+        safe_remove(downloaded_thumb)
+        if ok and os.path.exists(png_path):
+            have_cover = True
+            print("Thumbnail downloaded")
+        else:
+            safe_remove(png_path)
+            print(f"{YELLOW}Thumbnail conversion failed ({why or 'unknown error'}), continuing without cover art{RESET}")
+            log_error(item_url, f"thumbnail conversion failed: {why}")
+    else:
+        print(f"{YELLOW}No thumbnail available, continuing without cover art{RESET}")
 
-    print("Thumbnail downloaded")
+    # ---- download ----
+    if not ensure_dir(save_path):
+        cleanup_partials(safe_title, png_path)
+        return item_failed(index, total, 'save folder is not writable', item_url)
 
     print_green("Starting download")
-    
-    os.makedirs(save_path, exist_ok=True)
-    temp_media = f"temp_{safe_title}.{'mp3' if mode == '1' else 'mp4'}"
-    final_output = f"{save_path}/{safe_title}.{'mp3' if mode == '1' else 'mp4'}"
-
+    out_base = f"temp_{safe_title}".replace('%', '%%')
     if mode == '1':
         dl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': f'temp_{safe_title}.%(ext)s',
+            'outtmpl': out_base + '.%(ext)s',
             'postprocessors': [
-            {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': selected_format},
-            {'key': 'FFmpegMetadata', 'add_metadata': True},
-        ],
-        'progress_hooks': [progress_hook],
+                {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': selected_format},
+                {'key': 'FFmpegMetadata', 'add_metadata': True},
+            ],
+            'progress_hooks': [progress_hook],
             'quiet': True,
             'no_warnings': True,
             'logger': QuietLogger(),
@@ -465,24 +532,35 @@ def process_single_item(item_url, mode, is_playlist, index, total, save_path, se
     else:
         dl_opts = {
             'format': selected_format,
-            'outtmpl': temp_media,
+            'outtmpl': out_base + '.mp4',
             'merge_output_format': 'mp4',
-        'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True, 'add_chapters': True}],
-        'progress_hooks': [progress_hook],
+            'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True, 'add_chapters': True}],
+            'progress_hooks': [progress_hook],
             'quiet': True,
             'no_warnings': True,
             'logger': QuietLogger(),
         }
 
-    with yt_dlp.YoutubeDL(dl_opts) as ydl:
-        ydl.download([item_url])
+    try:
+        with yt_dlp.YoutubeDL(dl_opts) as ydl:
+            ydl.download([item_url])
+    except Exception as e:
+        print()
+        cleanup_partials(safe_title, png_path)
+        return item_failed(index, total, f"download failed ({short_reason(e)})", item_url)
 
     print("Finished download")
 
+    if not os.path.exists(temp_media):
+        cleanup_partials(safe_title, png_path)
+        return item_failed(index, total, 'the download finished but the file is missing (is ffmpeg working?)', item_url)
+
+    # ---- save, with cover art when possible ----
     print_green(f"Saving to {save_path}")
-    
-    if os.path.exists(temp_media):
-        if mode == '1' and os.path.exists(png_path):
+    cover_done = False
+    cover_failed = False
+    if have_cover and os.path.exists(png_path):
+        if mode == '1':
             cmd = [
                 'ffmpeg', '-y', '-i', temp_media, '-i', png_path,
                 '-map', '0:0', '-map', '1:0', '-c', 'copy',
@@ -491,10 +569,7 @@ def process_single_item(item_url, mode, is_playlist, index, total, save_path, se
                 '-metadata:s:v', 'comment="Cover (front)"',
                 final_output
             ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            os.remove(temp_media)
-            os.remove(png_path)
-        elif mode == '2' and os.path.exists(png_path):
+        else:
             cmd = [
                 'ffmpeg', '-y', '-i', temp_media, '-i', png_path,
                 '-map', '0', '-map', '1',
@@ -502,13 +577,28 @@ def process_single_item(item_url, mode, is_playlist, index, total, save_path, se
                 '-disposition:v:1', 'attached_pic',
                 final_output
             ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            os.remove(temp_media)
-            os.remove(png_path)
+        ok, why = run_ffmpeg(cmd)
+        if ok and os.path.exists(final_output):
+            cover_done = True
+            safe_remove(temp_media)
         else:
-            shutil.move(temp_media, final_output)
+            cover_failed = True
+            safe_remove(final_output)  # remove the broken partial file
+            print(f"{YELLOW}Adding cover art failed ({why or 'unknown error'}){RESET}")
+            log_error(item_url, f"cover art failed: {why}")
 
+    if not cover_done:
+        try:
+            shutil.move(temp_media, final_output)
+        except OSError as e:
+            cleanup_partials(safe_title, png_path)
+            return item_failed(index, total, f"could not save the file ({short_reason(e)})", item_url)
+        if cover_failed:
+            print_green("Saved without cover art")
+
+    safe_remove(png_path)
     print(f"File #{index}/{total} saved")
+    return True
 
 # ---------------- Settings / Uninstall ----------------
 
@@ -566,6 +656,9 @@ def shortcut_path():
         return os.path.join(prefix, 'bin', 'ytdl')
     if key in ('linux', 'mac'):
         return '/usr/local/bin/ytdl'
+    local = os.environ.get('LOCALAPPDATA')
+    if local:
+        return os.path.join(local, 'Microsoft', 'WindowsApps', 'ytdl.cmd')
     return None
 
 def in_venv():
@@ -785,7 +878,7 @@ def uninstall_menu():
 
     if shortcut_exists:
         print("Removing shortcut... ", end='', flush=True)
-        if key == 'termux':
+        if key in ('termux', 'windows'):
             try:
                 os.remove(shortcut)
                 report(True)
@@ -848,19 +941,243 @@ def uninstall_menu():
             print("Python is removed in the background after this window closes (a permission prompt may appear).")
     sys.exit(0)
 
+# ---------------- Update ----------------
+
+def run_capture(cmd):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, errors='replace')
+        return r.returncode == 0, ((r.stdout or '') + (r.stderr or '')).strip()
+    except Exception as e:
+        return False, str(e)
+
+def last_line(text):
+    lines = [l.strip() for l in (text or '').splitlines() if l.strip()]
+    return lines[-1] if lines else ''
+
+def show_status(status, msg):
+    if status in ('changed', 'same'):
+        print_green(msg)
+    elif status == 'skipped':
+        print(f"{YELLOW}{msg}{RESET}")
+    else:
+        print(f"{RED}failed ({msg}){RESET}")
+
+def ytdlp_version():
+    ok, out = run_capture([sys.executable, '-c', 'import yt_dlp.version as v; print(v.__version__)'])
+    return last_line(out) if ok else None
+
+def update_program():
+    if not os.path.isdir(os.path.join(PROGRAM_DIR, '.git')):
+        return 'skipped', 'skipped (not a git copy, run the install command again to enable updates)'
+    if not shutil.which('git'):
+        return 'failed', 'git not found'
+    ok, out = run_capture(['git', '-C', PROGRAM_DIR, 'pull', '--ff-only'])
+    if not ok:
+        return 'failed', last_line(out)[:140]
+    if 'already up to date' in out.lower():
+        return 'same', 'already up to date'
+    return 'changed', 'updated'
+
+def update_ytdlp():
+    before = ytdlp_version()
+    cmd = [sys.executable, '-m', 'pip', 'install', '-U', 'yt-dlp']
+    ok, out = run_capture(cmd)
+    if not ok and 'externally-managed' in out.lower() and not in_venv():
+        ok, out = run_capture(cmd + ['--break-system-packages'])
+    if not ok:
+        return 'failed', last_line(out)[:140]
+    after = ytdlp_version()
+    if before and after and before != after:
+        return 'changed', f"{before} -> {after}"
+    return 'same', f"already up to date ({after or before or 'unknown version'})"
+
+def run_step(label, cmd, same_texts=()):
+    print(f"Updating {label}... ", end='', flush=True)
+    ok, out = run_capture(cmd)
+    low = out.lower()
+    if any(t in low for t in same_texts):
+        print_green("already up to date")
+        return 'same'
+    if ok:
+        print_green("done")
+        return 'changed'
+    print(f"{RED}failed ({last_line(out)[:120]}){RESET}")
+    return 'failed'
+
+def schedule_windows_python_upgrade(python_id):
+    """Python can't be upgraded while this program is running it, so a helper does it after we exit."""
+    lines = [
+        '@echo off',
+        'cd /d "%USERPROFILE%"',
+        'ping 127.0.0.1 -n 4 >nul',
+        f'winget upgrade -e --id {python_id} --silent --accept-package-agreements --accept-source-agreements >nul 2>&1',
+        'del "%~f0" >nul 2>&1',
+    ]
+    bat = os.path.join(tempfile.gettempdir(), 'catwiz_update.bat')
+    with open(bat, 'w') as f:
+        f.write('\r\n'.join(lines) + '\r\n')
+    flags = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | DETACHED_PROCESS
+    subprocess.Popen(['cmd', '/c', bat], creationflags=flags, close_fds=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def update_system_packages():
+    """Upgrade FFmpeg, Python and Git with the system package manager. Returns a list of statuses."""
+    key = platform_key()
+    results = []
+    if key == 'termux':
+        results.append(run_step('package lists', ['pkg', 'update', '-y']))
+        names = ['python'] + [n for n in ('ffmpeg', 'git') if shutil.which(n)]
+        for n in names:
+            results.append(run_step(DISPLAY.get(n, n), ['pkg', 'install', '-y', n],
+                                    ('already the newest version',)))
+    elif key == 'linux':
+        results.append(run_step('package lists', ['sudo', 'apt-get', 'update', '-y']))
+        for n, pkg in (('ffmpeg', 'ffmpeg'), ('git', 'git'), ('python', 'python3')):
+            if n == 'python' or shutil.which(n):
+                results.append(run_step(DISPLAY[n], ['sudo', 'apt-get', 'install', '-y', '--only-upgrade', pkg],
+                                        ('already the newest version',)))
+    elif key == 'mac':
+        brew = find_brew()
+        if not brew:
+            print(f"{YELLOW}Homebrew not found, skipping FFmpeg, Python and Git.{RESET}")
+            return results
+        results.append(run_step('Homebrew', [brew, 'update']))
+        formulae = brew_formulae()
+        todo = [('FFmpeg', 'ffmpeg' if 'ffmpeg' in formulae else None),
+                ('Python', mac_python_formula() if any(f == 'python' or f.startswith('python@') for f in formulae) else None),
+                ('Git', 'git' if 'git' in formulae else None)]
+        for label, name in todo:
+            if not name:
+                print(f"Updating {label}... {YELLOW}skipped (not installed with Homebrew){RESET}")
+                continue
+            _, before = run_capture([brew, 'list', '--versions', name])
+            st = run_step(label, [brew, 'upgrade', name], ('already installed',))
+            if st == 'changed':
+                _, after = run_capture([brew, 'list', '--versions', name])
+                if before == after:
+                    st = 'same'
+                    print(f"  ({label} was already up to date)")
+            results.append(st)
+    else:
+        if not shutil.which('winget'):
+            print(f"{YELLOW}winget not found, skipping FFmpeg, Python and Git.{RESET}")
+            return results
+        same = ('no available upgrade found', 'no newer package versions')
+        base = ['winget', 'upgrade', '-e', '--silent',
+                '--accept-package-agreements', '--accept-source-agreements', '--id']
+        if shutil.which('ffmpeg'):
+            results.append(run_step('FFmpeg', base + ['Gyan.FFmpeg'], same))
+        if shutil.which('git'):
+            results.append(run_step('Git', base + ['Git.Git'], same))
+        try:
+            schedule_windows_python_upgrade(windows_python_id())
+            print(f"Updating Python... {GREEN}scheduled{RESET} (runs in the background after this program closes)")
+            results.append('changed')
+        except Exception as e:
+            print(f"Updating Python... {RED}failed ({short_reason(e)}){RESET}")
+            results.append('failed')
+    return results
+
+def update_necessary():
+    print(f"\n{CYAN}--------------------------------------{RESET}")
+    print(" Updating what's necessary")
+    print(f"{CYAN}--------------------------------------{RESET}")
+    statuses = []
+    print("Updating CATWIZ-ytdl... ", end='', flush=True)
+    st, msg = update_program()
+    show_status(st, msg)
+    statuses.append(st)
+    print("Updating yt-dlp... ", end='', flush=True)
+    st, msg = update_ytdlp()
+    show_status(st, msg)
+    statuses.append(st)
+    return statuses
+
+def update_everything():
+    key = platform_key()
+    print(f"\n{CYAN}--------------------------------------{RESET}")
+    print(" Update everything")
+    print(f"{CYAN}--------------------------------------{RESET}")
+    tools = {'termux': 'pkg', 'linux': 'apt', 'mac': 'Homebrew', 'windows': 'winget'}[key]
+    print("This will check for updates to:")
+    print("  - CATWIZ-ytdl (the program)")
+    print("  - yt-dlp")
+    print(f"  - FFmpeg, Python and Git (using {tools})")
+    if key == 'windows':
+        print("  A Windows permission prompt may appear.")
+    elif key in ('linux', 'mac'):
+        print("  You may be asked for your password.")
+    print("This can take a few minutes.")
+    if not ask_yes_no("Proceed?"):
+        print_green("Cancelled.")
+        return None
+    if key == 'linux' and subprocess.run(['sudo', '-v']).returncode != 0:
+        print(f"{RED}Could not get permission (sudo). Nothing was updated.{RESET}")
+        return []
+    print()
+    statuses = []
+    print("Updating CATWIZ-ytdl... ", end='', flush=True)
+    st, msg = update_program()
+    show_status(st, msg)
+    statuses.append(st)
+    statuses += update_system_packages()
+    # yt-dlp last, because a Python upgrade can remove packages installed outside a virtual environment
+    print("Updating yt-dlp... ", end='', flush=True)
+    st, msg = update_ytdlp()
+    show_status(st, msg)
+    statuses.append(st)
+    return statuses
+
+def update_menu():
+    max_attempts = 3
+    print(f"\n{CYAN}======================================{RESET}")
+    print(" Update")
+    print("  1. Update what's necessary (CATWIZ-ytdl and yt-dlp)")
+    print("  2. Update everything (also FFmpeg, Python and Git)")
+    print("  0. Back")
+    print(f"{CYAN}--------------------------------------{RESET}")
+    attempts = 0
+    choice = None
+    while attempts < max_attempts:
+        choice = input(f"{YELLOW}Select option [1/2/0]:{RESET} ").strip()
+        if choice in ('0', '1', '2'):
+            break
+        attempts += 1
+        if attempts < max_attempts:
+            print_green("Invalid option selected.")
+        else:
+            print_green("Too many invalid attempts. Exiting.")
+            sys.exit(1)
+    if choice == '0':
+        return
+    statuses = update_necessary() if choice == '1' else update_everything()
+    if statuses is None:
+        return
+    print()
+    if 'failed' in statuses:
+        print(f"{YELLOW}Some updates failed. Running the install command again usually repairs everything.{RESET}")
+    if 'changed' in statuses:
+        print_green("Updates installed. Restart CATWIZ-ytdl to use them.")
+        sys.exit(0)
+    if 'failed' not in statuses:
+        print_green("Everything is up to date.")
+
+# ---------------- Settings menu ----------------
+
 def settings_menu():
     max_attempts = 3
     while True:
         print(f"\n{CYAN}======================================{RESET}")
         print(" Settings")
-        print("  1. Uninstall CATWIZ-ytdl")
+        print("  1. Update")
+        print("  2. Uninstall CATWIZ-ytdl")
         print("  0. Back")
         print(f"{CYAN}--------------------------------------{RESET}")
         attempts = 0
         choice = None
         while attempts < max_attempts:
-            choice = input(f"{YELLOW}Select option [1/0]:{RESET} ").strip()
-            if choice in ('0', '1'):
+            choice = input(f"{YELLOW}Select option [1/2/0]:{RESET} ").strip()
+            if choice in ('0', '1', '2'):
                 break
             attempts += 1
             if attempts < max_attempts:
@@ -870,7 +1187,10 @@ def settings_menu():
                 sys.exit(1)
         if choice == '0':
             return
-        uninstall_menu()
+        if choice == '1':
+            update_menu()
+        else:
+            uninstall_menu()
 
 def print_main_menu():
     print(f"{CYAN}======================================{RESET}")
@@ -943,13 +1263,21 @@ def main():
         selected_quality = select_photo_quality(info, is_playlist)
         save_path = os.path.join(get_download_dir(), 'Thumbnails')
 
+    results = []
     if is_playlist:
         total = len(playlist_items)
         for idx, item in enumerate(playlist_items, 1):
             if mode == '3':
-                process_thumbnail_only(item, True, idx, total, save_path, selected_quality)
+                results.append(process_thumbnail_only(item, True, idx, total, save_path, selected_quality))
             else:
-                process_single_item(item, mode, True, idx, total, save_path, selected_quality)
+                results.append(process_single_item(item, mode, True, idx, total, save_path, selected_quality))
+        saved = results.count(True)
+        failed = results.count(False)
+        print()
+        if failed:
+            print(f"{YELLOW}Finished: {saved} saved, {failed} failed (details in errors.log){RESET}")
+        else:
+            print_green(f"Finished: all {saved} saved")
     else:
         if mode == '3':
             process_thumbnail_only(url, False, 1, 1, save_path, selected_quality, pre_info=info)

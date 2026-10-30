@@ -80,8 +80,32 @@ function Install-CatwizYtdl {
     py -3 -m pip install -U yt-dlp
     if ($LASTEXITCODE -ne 0) { Write-Host 'Could not install yt-dlp.' -ForegroundColor Red; return }
 
+    # ytdl shortcut: a small .cmd file in a folder that is normally already on PATH
+    $shortcutNote = ''
+    $shortcutOk = $false
+    try {
+        $binDir = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+        if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
+        # One line on purpose: cmd reads it fully before running, so the file can be deleted while it runs
+        $cmdLine = '@echo off & pushd "%TEMP%" & py -3 "%USERPROFILE%\CATWIZ-ytdl\main_cli.py" %* & popd'
+        Set-Content -Path (Join-Path $binDir 'ytdl.cmd') -Value $cmdLine -Encoding ASCII
+        $shortcutOk = $true
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if (($userPath -split ';') -notcontains $binDir) {
+            [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $binDir), 'User')
+            $env:Path = $env:Path + ';' + $binDir
+            $shortcutNote = ' (open a new terminal first)'
+        }
+    } catch {
+        Write-Host ('Could not create the ytdl shortcut: ' + $_.Exception.Message) -ForegroundColor Yellow
+    }
+
     Write-Host ''
-    Write-Host 'Installed. Starting CATWIZ-ytdl.' -ForegroundColor Green
+    if ($shortcutOk) {
+        Write-Host ('Installed. Starting CATWIZ-ytdl (type ytdl next time' + $shortcutNote + ').') -ForegroundColor Green
+    } else {
+        Write-Host 'Installed. Starting CATWIZ-ytdl.' -ForegroundColor Green
+    }
     # Run from the temp folder so nothing keeps the program folder locked (needed for uninstall)
     Push-Location $env:TEMP
     try { py -3 (Join-Path $dir 'main_cli.py') } finally { Pop-Location }
