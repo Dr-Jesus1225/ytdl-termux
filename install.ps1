@@ -27,7 +27,8 @@ function Install-CatwizYtdl {
 
     $found = @($items | Where-Object { $_.Found } | ForEach-Object { $_.Name })
     $missing = @($items | Where-Object { -not $_.Found })
-    $total = ($missing | Measure-Object -Property Size -Sum).Sum
+    $total = 0
+    foreach ($m in $missing) { $total += $m.Size }
 
     Write-Host ''
     Write-Host '======================================' -ForegroundColor Cyan
